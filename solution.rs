@@ -5,6 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use uuid::Uuid;
+use std::collections::HashMap;
 
 /// A source of randomness.
 pub(crate) trait RandomnessSource {
@@ -56,6 +57,8 @@ pub(crate) trait ConflictFreeReplicatedCounter<T> {
 pub(crate) struct ProbabilisticCounter {
     // TODO: you may add any necessary fields here
     // For storing bit vectors, consider using `bitvec::vec::BitVec` (our Cargo dependency).
+    bits_per_instance: usize,
+    instances: Vec<BitVec>,
 }
 
 impl ProbabilisticCounter {
@@ -73,8 +76,18 @@ impl ProbabilisticCounter {
         assert!(num_instances > 0);
         assert!(bits_per_instance > 0 && bits_per_instance <= u32::BITS as usize);
         assert!(bits_per_instance.is_multiple_of(8));
+        
+        let mut instances = Vec::with_capacity(num_instances);
 
-        todo!()
+        for _ in 0..num_instances {
+            let instance = BitVec::repeat(false, bits_per_instance);
+            instances.push(instance);
+        }
+
+        Self {
+            bits_per_instance,
+            instances,
+        }
     }
 
     /// Creates a new probabilistic counter with the same configuration as a given one.
@@ -87,13 +100,14 @@ impl ProbabilisticCounter {
     /// Returns the number of sketch instances utilized
     /// by a given probabilistic counter.
     pub(crate) fn get_num_instances(&self) -> usize {
-        todo!()
+        self.instances.len()
     }
 
     /// Returns the number of bits per sketch instance
     /// utilized by a given probabilistic counter.
     pub(crate) fn get_num_bits_per_instance(&self) -> usize {
-        todo!()
+        // todo!()
+        self.bits_per_instance
     }
 
     /// Given a u32 bit number drawn at random from a
@@ -127,7 +141,7 @@ impl ProbabilisticCounter {
     /// The 0th bit is the one most likely to be set.
     #[cfg(test)]
     pub(crate) fn get_bit(&self, instance_idx: usize, in_instance_bit_idx: usize) -> bool {
-        todo!()
+        self.instances[instance_idx][in_instance_bit_idx]
     }
 
     /// Sets a given bit in a given instance of the sketch
@@ -138,30 +152,80 @@ impl ProbabilisticCounter {
     /// `get_bit` should return values accordingly.
     #[cfg(test)]
     pub(crate) fn set_bit(&mut self, instance_idx: usize, in_instance_bit_idx: usize, val: bool) {
-        todo!()
+        self.instances[instance_idx].set(in_instance_bit_idx, val);
     }
     // TODO: you may add any extra methods here
 }
 
 impl ConflictFreeReplicatedCounter<u64> for ProbabilisticCounter {
     fn set_to_zero(&mut self) {
-        todo!()
+        for instance in &mut self.instances {
+            instance.fill(false);
+        }
     }
 
     fn set_to_infinity(&mut self) {
-        todo!()
+        for instance in &mut self.instances {
+            instance.fill(true);
+        }
     }
 
     fn try_count_one_more_element(&mut self, rs: &mut dyn RandomnessSource) -> Result<(), String> {
-        todo!()
+        // todo!()
+        for instance in &self.instances {
+            if instance.all() {
+                return Err("Counter is at infinity".to_string());
+            }
+        }
+
+        for instance in &mut self.instances{
+            let rand_val = rs.next_u32();
+            let bit_idx = Self::uniform_u32_to_geometric(rand_val, self.bits_per_instance);
+            instance.set(bit_idx as usize,true);
+        }
+
+        Ok(())
     }
 
     fn try_merge_with(&mut self, other: &Self) -> Result<(), String> {
-        todo!()
+        if self.bits_per_instance != other.bits_per_instance 
+            || self.instances.len() != other.instances.len() {
+                return Err("Incompatible counters".to_string());
+        }
+
+        for (my_instance,other_instance) in self.instances.iter_mut().zip(&other.instances) {
+            *my_instance |= other_instance;
+        }
+
+        Ok(())
     }
 
     fn evaluate(&self) -> u64 {
-        todo!()
+        let mut sum_fz = 0.0;
+        let mut all_instances_empty = true;
+
+        for instance in &self.instances {
+            if instance.all(){
+                return u64::MAX;
+            }
+
+            if instance.any() {
+                all_instances_empty = false;
+            }
+
+            let fz = instance.iter().position(|b| !*b).unwrap();
+            sum_fz += fz as f64; 
+        }
+
+        if all_instances_empty {
+            return 0;
+        }
+
+        let m = self.get_num_instances() as f64;
+        let avg_fz = sum_fz / m;
+        let val = Self::SCALING_FACTOR * 2.0_f64.powf(avg_fz);
+
+        return val.round() as u64;
     }
 }
 
