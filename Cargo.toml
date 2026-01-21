@@ -1,0 +1,25 @@
+[package]
+name = "lab-13"
+version = "0.1.1"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1"
+bitvec = "1.0"
+env_logger = "0.11"
+module_system = { path = "../la1/solution/", package = "assignment-1-solution" }
+log = "0.4"
+rand = "0.8"
+tokio = { version = "1.48", features = ["full"] }
+uuid = { version = "1.19", features = ["v4"] }
+
+[dev-dependencies]
+ntest = "0.9"
+tokio = { version = "1.48", features = ["full", "test-util"] }
+
+[[bin]]
+name = "lab13"
+path = "main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
