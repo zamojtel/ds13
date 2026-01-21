@@ -289,6 +289,7 @@ pub(crate) struct QueryData {
     pub(crate) bits_per_instance: usize,
     pub(crate) num_instances: usize,
     pub(crate) predicate: Arc<dyn Fn(&Uuid) -> bool + Send + Sync>,
+    pub(crate) timestamp: std::time::SystemTime,
 }
 
 impl Node {
@@ -321,7 +322,7 @@ impl Handler<QueryInstallMsg> for Node {
             bits_per_instance: msg.bits_per_instance,
             num_instances: msg.num_instances,
             predicate: msg.predicate.clone(),
-
+            timestamp: std::time::SystemTime::now(),
         };
 
         let mut counter = ProbabilisticCounter::new_zero(msg.bits_per_instance, msg.num_instances);
@@ -365,10 +366,24 @@ impl Handler<SyncGossipMsg> for Node {
     async fn handle(&mut self, msg: SyncGossipMsg) {
         for (query_id, (other_counter,other_data)) in msg.queries {
             match self.queries.get_mut(&query_id) {
-                Some((my_counter,_)) => {
-                    // counters merging 
-                    let _ = my_counter.try_merge_with(&other_counter);
-                },
+                Some((my_counter,my_data)) => {
+                    if other_data.timestamp > my_data.timestamp {
+                        let mut new_counter = ProbabilisticCounter::new_zero(other_data.bits_per_instance, other_data.num_instances);
+
+                        if (other_data.predicate)(&self.uuid) {
+                            let _ = new_counter.try_count_one_more_element(self.rs.as_mut());
+                        }
+
+                        let _ = new_counter.try_merge_with(&other_counter);
+
+                        *my_counter = new_counter;
+                        *my_data = other_data;
+
+                    } else if other_data.timestamp == my_data.timestamp {
+                        let _ = my_counter.try_merge_with(&other_counter);
+                    }
+                    // we just ignore older queries
+                },                
                 None => {
                     let mut new_counter = ProbabilisticCounter::new_zero(other_data.bits_per_instance, other_data.num_instances);
 
