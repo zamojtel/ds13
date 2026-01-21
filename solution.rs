@@ -106,7 +106,6 @@ impl ProbabilisticCounter {
     /// Returns the number of bits per sketch instance
     /// utilized by a given probabilistic counter.
     pub(crate) fn get_num_bits_per_instance(&self) -> usize {
-        // todo!()
         self.bits_per_instance
     }
 
@@ -154,7 +153,6 @@ impl ProbabilisticCounter {
     pub(crate) fn set_bit(&mut self, instance_idx: usize, in_instance_bit_idx: usize, val: bool) {
         self.instances[instance_idx].set(in_instance_bit_idx, val);
     }
-    // TODO: you may add any extra methods here
 }
 
 impl ConflictFreeReplicatedCounter<u64> for ProbabilisticCounter {
@@ -171,7 +169,6 @@ impl ConflictFreeReplicatedCounter<u64> for ProbabilisticCounter {
     }
 
     fn try_count_one_more_element(&mut self, rs: &mut dyn RandomnessSource) -> Result<(), String> {
-        // todo!()
         for instance in &self.instances {
             if instance.all() {
                 return Err("Counter is at infinity".to_string());
@@ -248,6 +245,7 @@ pub(crate) struct Node {
     rs: Box<dyn RandomnessSource + Send>,
     pss: Box<dyn PeerSamplingService + Send>,
     // TODO: you may add any necessary fields here
+    queries :HashMap<Uuid, (ProbabilisticCounter,QueryData)>,
 }
 
 /// A message used by a client to install a query on a node.
@@ -282,7 +280,15 @@ pub(crate) struct SyncTriggerMsg {}
 
 /// A gossip message sent between two nodes.
 pub(crate) struct SyncGossipMsg {
-    // TODO: you may add any necessary fields here
+    pub(crate) queries: HashMap<Uuid, (ProbabilisticCounter, QueryData)>,
+}
+
+// helper struct to store query data
+#[derive(Clone)]
+pub(crate) struct QueryData {
+    pub(crate) bits_per_instance: usize,
+    pub(crate) num_instances: usize,
+    pub(crate) predicate: Arc<dyn Fn(&Uuid) -> bool + Send + Sync>,
 }
 
 impl Node {
@@ -295,11 +301,9 @@ impl Node {
             uuid,
             rs,
             pss,
-            // TODO: you may add initialization of any added fields here
+            queries: HashMap::new(),
         }
     }
-
-    // TODO: you may add any extra methods here
 }
 
 #[async_trait::async_trait]
@@ -312,27 +316,71 @@ impl Handler<QueryInstallMsg> for Node {
         {
             return;
         }
-        todo!()
+
+        let query_data = QueryData {
+            bits_per_instance: msg.bits_per_instance,
+            num_instances: msg.num_instances,
+            predicate: msg.predicate.clone(),
+
+        };
+
+        let mut counter = ProbabilisticCounter::new_zero(msg.bits_per_instance, msg.num_instances);
+
+        if (msg.predicate)(&self.uuid) {
+            let _ = counter.try_count_one_more_element(self.rs.as_mut());
+        }
+
+        self.queries.insert(self.uuid,(counter, query_data));
     }
 }
 
 #[async_trait::async_trait]
 impl Handler<QueryResultPollMsg> for Node {
     async fn handle(&mut self, msg: QueryResultPollMsg) {
-        todo!()
+        let result = if let Some((counter,_)) = self.queries.get(&msg.initiator){
+            Some(counter.evaluate())
+        }else{
+            None
+        };
+
+        (msg.callback)(result).await;
     }
 }
 
 #[async_trait::async_trait]
 impl Handler<SyncTriggerMsg> for Node {
     async fn handle(&mut self, _msg: SyncTriggerMsg) {
-        todo!()
+        let peer = self.pss.get_random_peer().await;
+
+        let gossip_msg = SyncGossipMsg {
+            queries: self.queries.clone(),
+        };
+
+        peer.send(gossip_msg).await;
     }
 }
 
 #[async_trait::async_trait]
 impl Handler<SyncGossipMsg> for Node {
     async fn handle(&mut self, msg: SyncGossipMsg) {
-        todo!()
+        for (query_id, (other_counter,other_data)) in msg.queries {
+            match self.queries.get_mut(&query_id) {
+                Some((my_counter,_)) => {
+                    // counters merging 
+                    let _ = my_counter.try_merge_with(&other_counter);
+                },
+                None => {
+                    let mut new_counter = ProbabilisticCounter::new_zero(other_data.bits_per_instance, other_data.num_instances);
+
+                    if (other_data.predicate)(&self.uuid) {
+                        let _ = new_counter.try_count_one_more_element(self.rs.as_mut());
+                    }
+
+                    let _ = new_counter.try_merge_with(&other_counter);
+
+                    self.queries.insert(query_id, (new_counter, other_data));
+                }
+            }
+        }
     }
 }
